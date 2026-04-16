@@ -11,6 +11,8 @@ import (
 
 	"anthropic-proxy/internal/config"
 	"anthropic-proxy/internal/proxy"
+	"anthropic-proxy/internal/storage"
+	"anthropic-proxy/internal/web"
 )
 
 func main() {
@@ -33,11 +35,30 @@ func main() {
 		"listen", cfg.ListenAddr,
 		"upstream", cfg.Upstream,
 		"overload_rules", fmtRules(cfg),
+		"logging_enabled", cfg.Logging.Enabled,
 	)
+
+	var store *storage.Storage
+	if cfg.Logging.Enabled {
+		var err error
+		store, err = storage.New(cfg.Logging.DatabasePath)
+		if err != nil {
+			slog.Error("failed to initialize storage", "err", err)
+			os.Exit(1)
+		}
+		defer store.Close()
+		slog.Info("logging enabled", "database", cfg.Logging.DatabasePath)
+	}
 
 	client := &http.Client{Timeout: 10 * time.Minute}
 	mux := http.NewServeMux()
-	mux.Handle("/", proxy.New(cfg, client))
+	mux.Handle("/", proxy.New(cfg, client, store))
+
+	if store != nil {
+		webHandler := web.NewHandler(store)
+		webHandler.RegisterRoutes(mux)
+		slog.Info("web UI available at /web")
+	}
 
 	if err := http.ListenAndServe(cfg.ListenAddr, mux); err != nil {
 		slog.Error("server stopped", "err", err)

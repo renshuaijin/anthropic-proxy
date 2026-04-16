@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anthropic Proxy - Request Logs</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .log-row:hover { background-color: #f3f4f6; }
+        .status-2xx { color: #059669; }
+        .status-4xx { color: #d97706; }
+        .status-5xx { color: #dc2626; }
+        pre { white-space: pre-wrap; word-break: break-all; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-7xl">
+        <h1 class="text-2xl font-bold mb-6">Anthropic Proxy - Request Logs</h1>
+
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+            <div class="p-4 border-b flex items-center gap-4">
+                <input type="text" id="search" placeholder="Filter by path..."
+                    class="border rounded px-3 py-1.5 text-sm w-64" onkeyup="loadLogs()">
+                <select id="statusFilter" class="border rounded px-3 py-1.5 text-sm" onchange="loadLogs()">
+                    <option value="">All Status</option>
+                    <option value="2">2xx Success</option>
+                    <option value="4">4xx Client Error</option>
+                    <option value="5">5xx Server Error</option>
+                </select>
+                <button onclick="loadLogs()" class="bg-blue-500 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-600">
+                    Refresh
+                </button>
+            </div>
+
+            <table class="w-full text-sm">
+                <thead class="bg-gray-50 text-gray-600">
+                    <tr>
+                        <th class="px-3 py-2 text-left">Time</th>
+                        <th class="px-3 py-2 text-left">Method</th>
+                        <th class="px-3 py-2 text-left">Path</th>
+                        <th class="px-3 py-2 text-left">Model</th>
+                        <th class="px-3 py-2 text-left">Status</th>
+                        <th class="px-3 py-2 text-left">Duration</th>
+                        <th class="px-3 py-2 text-left">TTFB</th>
+                        <th class="px-3 py-2 text-left">Tokens</th>
+                        <th class="px-3 py-2 text-left">Retries</th>
+                    </tr>
+                </thead>
+                <tbody id="logsBody"></tbody>
+            </table>
+
+            <div class="p-4 border-t flex items-center justify-between">
+                <span id="pageInfo" class="text-sm text-gray-600"></span>
+                <div class="flex gap-2">
+                    <button onclick="prevPage()" id="prevBtn" class="px-3 py-1 border rounded text-sm disabled:opacity-50">Prev</button>
+                    <button onclick="nextPage()" id="nextBtn" class="px-3 py-1 border rounded text-sm">Next</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="detailModal" class="fixed inset-0 bg-black/50 hidden items-center justify-center p-4">
+            <div class="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-auto">
+                <div class="p-4 border-b flex items-center justify-between sticky top-0 bg-white">
+                    <h2 class="font-semibold" id="detailTitle">Request Detail</h2>
+                    <button onclick="closeDetail()" class="text-gray-500 hover:text-gray-700 text-xl">&times;</button>
+                </div>
+                <div class="p-4 space-y-4" id="detailContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let page = 1;
+        const limit = 30;
+
+        function loadLogs() {
+            const search = document.getElementById('search').value;
+            const statusFilter = document.getElementById('statusFilter').value;
+
+            fetch(`/api/logs?page=${page}&limit=${limit}`)
+                .then(r => r.json())
+                .then(data => {
+                    let logs = data.logs || [];
+                    if (search) {
+                        logs = logs.filter(l => l.path.includes(search) || (l.model && l.model.includes(search)));
+                    }
+                    if (statusFilter) {
+                        logs = logs.filter(l => String(l.status_code)[0] === statusFilter);
+                    }
+                    renderLogs(logs);
+                    document.getElementById('pageInfo').textContent = `Page ${page}`;
+                    document.getElementById('prevBtn').disabled = page <= 1;
+                });
+        }
+
+        function renderLogs(logs) {
+            const tbody = document.getElementById('logsBody');
+            tbody.innerHTML = logs.map(log => `
+                <tr class="log-row cursor-pointer border-t" onclick="showDetail(${log.id})">
+                    <td class="px-3 py-2 text-gray-600 text-xs">${log.created_at.replace('T', ' ').slice(5, 19)}</td>
+                    <td class="px-3 py-2 font-mono text-xs">${log.method}</td>
+                    <td class="px-3 py-2 font-mono text-xs truncate max-w-[150px]" title="${log.path}">${log.path}</td>
+                    <td class="px-3 py-2 font-mono text-xs truncate max-w-[120px]" title="${log.model}">${log.model || '-'}</td>
+                    <td class="px-3 py-2 font-mono text-xs status-${String(log.status_code)[0]}xx">${log.status_code}</td>
+                    <td class="px-3 py-2 text-xs">${formatMs(log.elapsed_ms)}</td>
+                    <td class="px-3 py-2 text-xs">${log.ttfb_ms ? formatMs(log.ttfb_ms) : '-'}</td>
+                    <td class="px-3 py-2 text-xs">${log.input_tokens || log.output_tokens ? `${log.input_tokens}/${log.output_tokens}` : '-'}</td>
+                    <td class="px-3 py-2 text-xs">${log.retry_count || '-'}</td>
+                </tr>
+            `).join('');
+        }
+
+        function formatMs(ms) {
+            if (ms < 1000) return `${ms}ms`;
+            return `${(ms / 1000).toFixed(1)}s`;
+        }
+
+        function showDetail(id) {
+            fetch(`/api/logs/${id}`)
+                .then(r => r.json())
+                .then(log => {
+                    document.getElementById('detailTitle').textContent = `${log.method} ${log.path}`;
+                    document.getElementById('detailContent').innerHTML = `
+                        <div class="grid grid-cols-3 gap-4 text-sm">
+                            <div><span class="text-gray-500">Status:</span> <span class="status-${String(log.status_code)[0]}xx font-mono">${log.status_code}</span></div>
+                            <div><span class="text-gray-500">Duration:</span> ${formatMs(log.elapsed_ms)}</div>
+                            <div><span class="text-gray-500">TTFB:</span> ${log.ttfb_ms ? formatMs(log.ttfb_ms) : '-'}</div>
+                            <div><span class="text-gray-500">Model:</span> <span class="font-mono text-xs">${log.model || '-'}</span></div>
+                            <div><span class="text-gray-500">Input Tokens:</span> ${log.input_tokens || '-'}</div>
+                            <div><span class="text-gray-500">Output Tokens:</span> ${log.output_tokens || '-'}</div>
+                            <div><span class="text-gray-500">Retries:</span> ${log.retry_count || 0}</div>
+                            <div><span class="text-gray-500">SSE:</span> ${log.is_sse ? 'Yes' : 'No'}</div>
+                        </div>
+                        <div>
+                            <h3 class="font-semibold mb-2 text-gray-700">Request Headers</h3>
+                            <pre class="bg-gray-50 p-3 rounded text-xs overflow-auto max-h-40">${formatJSON(log.headers)}</pre>
+                        </div>
+                        <div>
+                            <h3 class="font-semibold mb-2 text-gray-700">Request Body</h3>
+                            <pre class="bg-gray-50 p-3 rounded text-xs overflow-auto max-h-60">${formatJSON(log.request_body)}</pre>
+                        </div>
+                        ${log.response_body ? `
+                        <div>
+                            <h3 class="font-semibold mb-2 text-gray-700">Response Body</h3>
+                            <pre class="bg-green-50 p-3 rounded text-xs overflow-auto max-h-80">${formatSSE(log.response_body)}</pre>
+                        </div>
+                        ` : ''}
+                        ${log.error_body ? `
+                        <div>
+                            <h3 class="font-semibold mb-2 text-gray-700">Error Response</h3>
+                            <pre class="bg-red-50 p-3 rounded text-xs overflow-auto max-h-60">${formatJSON(log.error_body)}</pre>
+                        </div>
+                        ` : ''}
+                    `;
+                    document.getElementById('detailModal').classList.remove('hidden');
+                    document.getElementById('detailModal').classList.add('flex');
+                });
+        }
+
+        function formatJSON(str) {
+            if (!str) return '';
+            try {
+                return JSON.stringify(JSON.parse(str), null, 2);
+            } catch {
+                return str;
+            }
+        }
+
+        function formatSSE(str) {
+            if (!str) return '';
+            // Try to parse as SSE and show readable format
+            const lines = str.split('\n');
+            let result = [];
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const data = line.slice(6);
+                    if (data === '[DONE]') {
+                        result.push('data: [DONE]');
+                    } else {
+                        try {
+                            const parsed = JSON.parse(data);
+                            result.push('data: ' + JSON.stringify(parsed, null, 2));
+                        } catch {
+                            result.push(line);
+                        }
+                    }
+                } else {
+                    result.push(line);
+                }
+            }
+            return result.join('\n');
+        }
+
+        function closeDetail() {
+            document.getElementById('detailModal').classList.add('hidden');
+            document.getElementById('detailModal').classList.remove('flex');
+        }
+
+        function prevPage() { if (page > 1) { page--; loadLogs(); } }
+        function nextPage() { page++; loadLogs(); }
+
+        // Close modal on escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeDetail();
+        });
+
+        loadLogs();
+    </script>
+</body>
+</html>

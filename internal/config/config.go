@@ -31,6 +31,14 @@ type Config struct {
 	Upstream      string
 	ProviderName  string
 	OverloadRules []provider.Rule
+	Logging       LoggingConfig
+}
+
+// LoggingConfig holds logging-related configuration.
+type LoggingConfig struct {
+	Enabled      bool
+	DatabasePath string
+	MaxAgeDays   int
 }
 
 // ---- YAML types ----
@@ -55,13 +63,20 @@ type ruleYAML struct {
 }
 
 type providerYAML struct {
-	Upstream      string      `yaml:"upstream"`
-	OverloadRules []ruleYAML  `yaml:"overload_rules"`
+	Upstream      string     `yaml:"upstream"`
+	OverloadRules []ruleYAML `yaml:"overload_rules"`
+}
+
+type loggingYAML struct {
+	Enabled      *bool  `yaml:"enabled"`
+	DatabasePath string `yaml:"database_path"`
+	MaxAgeDays   *int   `yaml:"max_age_days"`
 }
 
 type fileConfig struct {
 	Listen    string                  `yaml:"listen"`
 	Active    string                  `yaml:"active"`
+	Logging   loggingYAML             `yaml:"logging"`
 	Providers map[string]providerYAML `yaml:"providers"`
 }
 
@@ -93,10 +108,10 @@ func Load(path string) (*Config, error) {
 		pc.Upstream = v
 	}
 
-	return resolve(fc.Active, pc, fc.Listen)
+	return resolve(fc.Active, pc, fc.Listen, fc.Logging)
 }
 
-func resolve(name string, pc providerYAML, listen string) (*Config, error) {
+func resolve(name string, pc providerYAML, listen string, lc loggingYAML) (*Config, error) {
 	if pc.Upstream == "" {
 		return nil, fmt.Errorf("provider %q: upstream URL is required", name)
 	}
@@ -134,5 +149,29 @@ func resolve(name string, pc providerYAML, listen string) (*Config, error) {
 		Upstream:      strings.TrimRight(pc.Upstream, "/"),
 		ProviderName:  name,
 		OverloadRules: rules,
+		Logging:       resolveLogging(lc),
 	}, nil
+}
+
+func resolveLogging(lc loggingYAML) LoggingConfig {
+	cfg := LoggingConfig{
+		DatabasePath: "./logs.db",
+		MaxAgeDays:   7,
+	}
+	if lc.Enabled != nil {
+		cfg.Enabled = *lc.Enabled
+	}
+	if lc.DatabasePath != "" {
+		cfg.DatabasePath = lc.DatabasePath
+	}
+	if lc.MaxAgeDays != nil {
+		cfg.MaxAgeDays = *lc.MaxAgeDays
+	}
+	if v := os.Getenv("LOGGING_ENABLED"); v != "" {
+		cfg.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("LOGGING_DATABASE_PATH"); v != "" {
+		cfg.DatabasePath = v
+	}
+	return cfg
 }
